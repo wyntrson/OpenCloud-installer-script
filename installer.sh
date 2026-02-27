@@ -83,20 +83,18 @@ services:
     ports:
       - "$BIND_IP:$OC_PORT:9200"
     volumes:
-      - "$STORAGE_PATH:/var/lib/ocis"
-      - "/opt/opencloud/config:/etc/ocis"
+      - "$STORAGE_PATH:/var/lib/opencloud"
+      - "/opt/opencloud/config:/etc/opencloud"
     environment:
-      OCIS_URL: "https://$TS_DOMAIN"
-      OCIS_INSECURE: "false"
+      OPENCLOUD_URL: "https://$TS_DOMAIN"
+      OPENCLOUD_INSECURE: "false"
       PROXY_TLS: "false"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9200/.well-known/openid-configuration"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
 EOF
 ok "Compose file written to $COMPOSE_FILE"
+
+# --------------- initialise before starting ---------------
+info "Running initialisation (generating secrets, etc.)..."
+INIT_OUT=$(docker run --rm -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init 2>&1) || true
 
 # --------------- start container ---------------
 info "Pulling image and starting container..."
@@ -119,9 +117,9 @@ while true; do
   sleep 3
 done
 
-# --------------- initialise & show credentials ---------------
-info "Running first-time initialisation..."
-docker exec -i opencloud_tenant ocis init || info "Already initialised — skipping"
+# --------------- show credentials ---------------
+info "Configuration results:"
+echo -e "$INIT_OUT"
 
 banner "================================================="
 banner " INSTALLATION COMPLETE"
@@ -131,4 +129,4 @@ info "              (route 443 via 'tailscale serve' or funnel to $BIND_IP:$OC_P
 info "Direct URL:   http://$BIND_IP:$OC_PORT"
 info "Storage Path: $STORAGE_PATH"
 echo ""
-ok "Save the admin password shown above — it cannot be recovered later."
+ok "Check the output above for any admin credentials."
