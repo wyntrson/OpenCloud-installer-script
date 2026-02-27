@@ -17,27 +17,17 @@ Before running the installer, ensure the following are installed and running on 
 
 - **Linux OS** (Tested on standard distributions like Ubuntu/Debian)
 - **Root Privileges** (The script must be run as `root` or via `sudo`)
-- **Docker**: The Docker daemon must be installed and running.
-- **Docker Compose**: Required to orchestrate the container.
+- **Docker**: The Docker daemon must be installed and running. *(Note: Docker installed via Snap is not supported due to strict path confinement. Please use the official Docker installation script).*
+- **Docker Compose**: Required to orchestrate the container (the `docker compose` plugin).
 - **Tailscale**: Must be installed, authenticated, and connected to your tailnet.
 
 ## Installation
 
-1. **Clone the repository** (or download the script directly):
-   ```bash
-   git clone https://github.com/yourusername/OpenCloud-installer-script.git
-   cd OpenCloud-installer-script
-   ```
+You can install and run the script directly using `curl`:
 
-2. **Make the script executable**:
-   ```bash
-   chmod +x installer.sh
-   ```
-
-3. **Run the installer as root**:
-   ```bash
-   sudo ./installer.sh
-   ```
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/wyntrson/OpenCloud-installer-script/main/installer.sh)"
+```
 
 ## Configuration Prompts
 
@@ -57,9 +47,9 @@ Once the script completes successfully, it will output the admin credentials. **
 The script binds OpenCloud to your Tailscale IP on the specified port (e.g., `http://100.x.y.z:8080`). To access it securely via HTTPS using your MagicDNS domain, you can use Tailscale Serve:
 
 ```bash
-sudo tailscale serve --bg --https=443 http://127.0.0.1:8080
+sudo tailscale serve --bg --https=443 http://<YOUR_TAILSCALE_IP>:<YOUR_PORT>
 ```
-*(Note: Adjust `127.0.0.1:8080` to your actual bind IP and port if necessary).*
+*(Note: Adjust `<YOUR_TAILSCALE_IP>:<YOUR_PORT>` to your actual bind IP and port).*
 
 ## File Locations
 
@@ -69,6 +59,11 @@ sudo tailscale serve --bg --https=443 http://127.0.0.1:8080
 
 ## Troubleshooting
 
+- **Script fails with "Docker installed via snap is not supported"**: Snap packages have strict path confinement and cannot access `/opt` or `/mnt`. Remove the snap version and install via the official script:
+  ```bash
+  sudo snap remove docker
+  curl -fsSL https://get.docker.com | sh
+  ```
 - **Script fails with "Docker daemon is not running"**: Ensure Docker is installed and the service is active (`sudo systemctl status docker`).
 - **Tailscale IP not detected**: Ensure Tailscale is running and connected (`sudo tailscale status`).
 - **Container unhealthy**: Check the container logs for errors:

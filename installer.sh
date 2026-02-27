@@ -25,6 +25,12 @@ for cmd in docker tailscale; do
   fi
 done
 
+if [[ "$(command -v docker)" == "/snap/bin/docker" ]]; then
+  err "Docker installed via snap is not supported due to strict path confinement."
+  err "Please run: snap remove docker && curl -fsSL https://get.docker.com | sh"
+  exit 1
+fi
+
 if ! docker info &>/dev/null; then
   err "Docker daemon is not running"; exit 1
 fi
