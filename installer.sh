@@ -58,6 +58,9 @@ echo ""
 
 read -p "Enter the Tailscale IP to bind to [$TS_IP]: " BIND_IP
 BIND_IP=${BIND_IP:-$TS_IP}
+if [[ -z "$BIND_IP" ]]; then
+  err "No Tailscale IP provided and none detected. Is Tailscale running?"; exit 1
+fi
 
 read -p "Enter the port for OpenCloud [8080]: " OC_PORT
 OC_PORT=${OC_PORT:-8080}
@@ -66,6 +69,9 @@ read -p "Enter the absolute path for file storage [/mnt/clouddata]: " STORAGE_PA
 STORAGE_PATH=${STORAGE_PATH:-/mnt/clouddata}
 
 read -p "Enter your Tailscale MagicDNS domain (e.g., machine.alias.ts.net): " TS_DOMAIN
+if [[ -z "$TS_DOMAIN" ]]; then
+  err "Tailscale MagicDNS domain cannot be empty."; exit 1
+fi
 
 # --------------- prepare storage ---------------
 mkdir -p "$STORAGE_PATH" /opt/opencloud/config
@@ -93,12 +99,17 @@ EOF
 ok "Compose file written to $COMPOSE_FILE"
 
 # --------------- initialise before starting ---------------
+info "Pulling image..."
+docker pull "${OC_IMAGE}:latest"
 info "Running initialisation (generating secrets, etc.)..."
-INIT_OUT=$(docker run --rm -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init 2>&1) || true
+INIT_OUT=$(docker run --rm -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init 2>&1); INIT_EXIT=$?
+if [[ $INIT_EXIT -ne 0 ]]; then
+  info "Init exited with code $INIT_EXIT (may be already initialised — continuing)"
+fi
 
 # --------------- start container ---------------
-info "Pulling image and starting container..."
-docker compose -f "$COMPOSE_FILE" up -d --pull always
+info "Starting container..."
+docker compose -f "$COMPOSE_FILE" up -d
 
 # --------------- wait for healthy ---------------
 info "Waiting for OpenCloud to become healthy (up to 120 s)..."
@@ -106,6 +117,11 @@ SECONDS=0
 MAX_WAIT=120
 while true; do
   STATE=$(docker inspect --format='{{.State.Health.Status}}' opencloud_tenant 2>/dev/null || echo "starting")
+  # If no HEALTHCHECK is defined, STATE is empty — fall back to checking if container is running
+  if [[ -z "$STATE" ]]; then
+    STATE=$(docker inspect --format='{{.State.Status}}' opencloud_tenant 2>/dev/null || echo "starting")
+    [[ "$STATE" == "running" ]] && { ok "Container is running (no healthcheck defined, ${SECONDS}s)"; break; }
+  fi
   if [[ "$STATE" == "healthy" ]]; then
     ok "Container is healthy (${SECONDS}s)"; break
   fi
