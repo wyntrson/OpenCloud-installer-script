@@ -14,16 +14,30 @@ trap 'cleanup $LINENO' ERR
 COMPOSE_FILE="/opt/opencloud/docker-compose.yml"
 OC_IMAGE="opencloudeu/opencloud"
 
+is_valid_ipv4() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    (( octet >= 0 && octet <= 255 )) || return 1
+  done
+  return 0
+}
+
 # --------------- preflight ---------------
 if [[ "$EUID" -ne 0 ]]; then
   err "Please run as root"; exit 1
 fi
 
-for cmd in docker tailscale; do
+for cmd in docker tailscale timeout; do
   if ! command -v "$cmd" &>/dev/null; then
     err "'$cmd' is not installed or not in PATH"; exit 1
   fi
 done
+
+if ! docker compose version &>/dev/null; then
+  err "'docker compose' plugin is not available"; exit 1
+fi
 
 if [[ "$(command -v docker)" == "/snap/bin/docker" ]]; then
   err "Docker installed via snap is not supported due to strict path confinement."
@@ -61,16 +75,28 @@ BIND_IP=${BIND_IP:-$TS_IP}
 if [[ -z "$BIND_IP" ]]; then
   err "No Tailscale IP provided and none detected. Is Tailscale running?"; exit 1
 fi
+if ! is_valid_ipv4 "$BIND_IP"; then
+  err "Invalid IPv4 address: $BIND_IP"; exit 1
+fi
 
 read -p "Enter the port for OpenCloud [8080]: " OC_PORT
 OC_PORT=${OC_PORT:-8080}
+if ! [[ "$OC_PORT" =~ ^[0-9]+$ ]] || (( OC_PORT < 1 || OC_PORT > 65535 )); then
+  err "Port must be a number between 1 and 65535."; exit 1
+fi
 
 read -p "Enter the absolute path for file storage [/mnt/clouddata]: " STORAGE_PATH
 STORAGE_PATH=${STORAGE_PATH:-/mnt/clouddata}
+if [[ "$STORAGE_PATH" != /* ]]; then
+  err "Storage path must be an absolute path."; exit 1
+fi
 
 read -p "Enter your Tailscale MagicDNS domain (e.g., machine.alias.ts.net): " TS_DOMAIN
 if [[ -z "$TS_DOMAIN" ]]; then
   err "Tailscale MagicDNS domain cannot be empty."; exit 1
+fi
+if [[ "$TS_DOMAIN" =~ [[:space:]] ]] || [[ "$TS_DOMAIN" != *.* ]]; then
+  err "Invalid domain format: $TS_DOMAIN"; exit 1
 fi
 
 # --------------- prepare storage ---------------
@@ -95,7 +121,6 @@ services:
       OPENCLOUD_URL: "https://$TS_DOMAIN"
       OPENCLOUD_INSECURE: "false"
       PROXY_TLS: "false"
-      OCIS_INSECURE: "false"
 EOF
 ok "Compose file written to $COMPOSE_FILE"
 
@@ -104,27 +129,24 @@ info "Pulling image..."
 docker pull "${OC_IMAGE}:latest"
 info "Running initialisation (generating secrets, etc.)..."
 
-# We must run this as daemon (-d), wait for it, and then capture logs before removing, 
-# otherwise docker run can sometimes hang indefinitely if the entrypoint keeps a background process alive.
-docker run -d --name opencloud_init -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init >/dev/null || true
-# Wait up to 30 seconds for init to complete
-INIT_SECONDS=0
-while [[ $(docker inspect -f '{{.State.Running}}' opencloud_init 2>/dev/null) == "true" ]]; do
-  if (( INIT_SECONDS >= 30 )); then
-    info "Init taking too long (30s), forcing stop..."
-    docker stop opencloud_init >/dev/null
-    break
-  fi
-  sleep 1
-  INIT_SECONDS=$((INIT_SECONDS + 1))
-done
+# Clean up any leftover init container from a previous failed run
+docker rm -f opencloud_init &>/dev/null || true
 
-INIT_OUT=$(docker logs opencloud_init 2>&1)
-INIT_EXIT=$(docker inspect -f '{{.State.ExitCode}}' opencloud_init 2>/dev/null || echo "1")
-docker rm -f opencloud_init >/dev/null
+# Use timeout to prevent hanging; --rm cleans up container automatically
+set +e
+INIT_OUT=$(timeout 60 docker run --rm --name opencloud_init \
+  -v "/opt/opencloud/config:/etc/opencloud" \
+  -e OPENCLOUD_URL="https://$TS_DOMAIN" \
+  "$OC_IMAGE:latest" init 2>&1)
+INIT_EXIT=$?
+set -e
 
-if [[ "$INIT_EXIT" != "0" ]]; then
-  info "Init exited with code $INIT_EXIT (may be already initialised — continuing)"
+if [[ $INIT_EXIT -eq 124 ]]; then
+  info "Initialisation timed out after 60s; proceeding with existing config."
+elif [[ $INIT_EXIT -ne 0 ]]; then
+  info "Initialisation exited with code $INIT_EXIT; proceeding and showing output below."
+else
+  ok "Initialisation step done"
 fi
 
 # --------------- start container ---------------
@@ -141,6 +163,12 @@ while true; do
   if [[ -z "$STATE" ]]; then
     STATE=$(docker inspect --format='{{.State.Status}}' opencloud_tenant 2>/dev/null || echo "starting")
     [[ "$STATE" == "running" ]] && { ok "Container is running (no healthcheck defined, ${SECONDS}s)"; break; }
+  fi
+  if [[ "$STATE" == "unhealthy" ]]; then
+    err "Container reported unhealthy state."
+    err "Recent logs:"
+    docker compose -f "$COMPOSE_FILE" logs --tail=40
+    exit 1
   fi
   if [[ "$STATE" == "healthy" ]]; then
     ok "Container is healthy (${SECONDS}s)"; break
