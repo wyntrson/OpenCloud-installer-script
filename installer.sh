@@ -106,7 +106,7 @@ info "Running initialisation (generating secrets, etc.)..."
 
 # We must run this as daemon (-d), wait for it, and then capture logs before removing, 
 # otherwise docker run can sometimes hang indefinitely if the entrypoint keeps a background process alive.
-docker run -d --name opencloud_init -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init >/dev/null
+docker run -d --name opencloud_init -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init >/dev/null || true
 # Wait up to 30 seconds for init to complete
 INIT_SECONDS=0
 while [[ $(docker inspect -f '{{.State.Running}}' opencloud_init 2>/dev/null) == "true" ]]; do
@@ -116,7 +116,7 @@ while [[ $(docker inspect -f '{{.State.Running}}' opencloud_init 2>/dev/null) ==
     break
   fi
   sleep 1
-  ((INIT_SECONDS++))
+  INIT_SECONDS=$((INIT_SECONDS + 1))
 done
 
 INIT_OUT=$(docker logs opencloud_init 2>&1)
