@@ -95,6 +95,7 @@ services:
       OPENCLOUD_URL: "https://$TS_DOMAIN"
       OPENCLOUD_INSECURE: "false"
       PROXY_TLS: "false"
+      OCIS_INSECURE: "false"
 EOF
 ok "Compose file written to $COMPOSE_FILE"
 
@@ -102,8 +103,27 @@ ok "Compose file written to $COMPOSE_FILE"
 info "Pulling image..."
 docker pull "${OC_IMAGE}:latest"
 info "Running initialisation (generating secrets, etc.)..."
-INIT_OUT=$(docker run --rm -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init 2>&1); INIT_EXIT=$?
-if [[ $INIT_EXIT -ne 0 ]]; then
+
+# We must run this as daemon (-d), wait for it, and then capture logs before removing, 
+# otherwise docker run can sometimes hang indefinitely if the entrypoint keeps a background process alive.
+docker run -d --name opencloud_init -v "/opt/opencloud/config:/etc/opencloud" -e OPENCLOUD_URL="https://$TS_DOMAIN" $OC_IMAGE:latest init >/dev/null
+# Wait up to 30 seconds for init to complete
+INIT_SECONDS=0
+while [[ $(docker inspect -f '{{.State.Running}}' opencloud_init 2>/dev/null) == "true" ]]; do
+  if (( INIT_SECONDS >= 30 )); then
+    info "Init taking too long (30s), forcing stop..."
+    docker stop opencloud_init >/dev/null
+    break
+  fi
+  sleep 1
+  ((INIT_SECONDS++))
+done
+
+INIT_OUT=$(docker logs opencloud_init 2>&1)
+INIT_EXIT=$(docker inspect -f '{{.State.ExitCode}}' opencloud_init 2>/dev/null || echo "1")
+docker rm -f opencloud_init >/dev/null
+
+if [[ "$INIT_EXIT" != "0" ]]; then
   info "Init exited with code $INIT_EXIT (may be already initialised — continuing)"
 fi
 
